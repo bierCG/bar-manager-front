@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-const String backendDomain = 'https://bar-manager-back.onrender.com'; 
+const String backendDomain = 'bar-manager-back.onrender.com'; 
 
 const String baseUrlHttp = 'https://$backendDomain';
 const String urlWebSocket = 'wss://$backendDomain/ws/bar';
