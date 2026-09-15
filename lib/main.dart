@@ -148,7 +148,22 @@ class _TelaBarmanState extends State<TelaBarman> {
   @override
   void initState() {
     super.initState();
+    carregarHistoricoHTTP();
     conectarWebSocket();
+  }
+
+  Future<void> carregarHistoricoHTTP() async {
+    try {
+      final response = await http.get(Uri.parse('$baseUrlHttp/pedidos'));
+      if (response.statusCode == 200) {
+        final List<dynamic> dados = jsonDecode(response.body);
+        setState(() {
+          pedidos = dados.map((p) => Map<String, dynamic>.from(p)).toList();
+        });
+      }
+    } catch (e) {
+      print('Erro ao carregar histórico via HTTP: $e');
+    }
   }
 
   void conectarWebSocket() {
@@ -162,9 +177,12 @@ class _TelaBarmanState extends State<TelaBarman> {
 
       setState(() {
         if (evento == 'NOVO_PEDIDO') {
-          pedidos.add(
-            Map<String, dynamic>.from(dados['pedido']),
-          );
+          final novoPedido = Map<String, dynamic>.from(dados['pedido']);
+          final jaExiste = pedidos.any((p) => p['id'] == novoPedido['id']);
+          
+          if (!jaExiste) {
+            pedidos.insert(0, novoPedido);
+          }
         } else if (evento == 'STATUS_ATUALIZADO') {
           final pedidoAtualizado = dados['pedido'];
           final index = pedidos.indexWhere(
@@ -325,7 +343,7 @@ class _TelaBarmanState extends State<TelaBarman> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'Status: ${p['status']}',
+                              'Status: ${p['status'] ?? "ABERTO"}',
                               style: TextStyle(
                                 color: pronto ? Colors.greenAccent : const Color(0xFFFF6E40),
                                 fontSize: 13,
@@ -368,7 +386,22 @@ class _TelaCozinhaState extends State<TelaCozinha> {
   @override
   void initState() {
     super.initState();
+    carregarHistoricoHTTP();
     conectarWebSocket();
+  }
+
+  Future<void> carregarHistoricoHTTP() async {
+    try {
+      final response = await http.get(Uri.parse('$baseUrlHttp/pedidos'));
+      if (response.statusCode == 200) {
+        final List<dynamic> dados = jsonDecode(response.body);
+        setState(() {
+          pedidos = dados.map((p) => Map<String, dynamic>.from(p)).toList();
+        });
+      }
+    } catch (e) {
+      print('Erro ao carregar histórico via HTTP: $e');
+    }
   }
 
   void conectarWebSocket() {
@@ -382,9 +415,12 @@ class _TelaCozinhaState extends State<TelaCozinha> {
 
       setState(() {
         if (evento == 'NOVO_PEDIDO') {
-          pedidos.add(
-            Map<String, dynamic>.from(dados['pedido']),
-          );
+          final novoPedido = Map<String, dynamic>.from(dados['pedido']);
+          final jaExiste = pedidos.any((p) => p['id'] == novoPedido['id']);
+          
+          if (!jaExiste) {
+            pedidos.insert(0, novoPedido);
+          }
         } else if (evento == 'STATUS_ATUALIZADO') {
           final pedidoAtualizado = dados['pedido'];
           final index = pedidos.indexWhere(
@@ -462,7 +498,7 @@ class _TelaCozinhaState extends State<TelaCozinha> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        'Status: ${p['status']}',
+                        'Status: ${p['status'] ?? "ABERTO"}',
                         style: TextStyle(
                           color: pronto ? Colors.greenAccent : const Color(0xFFFF6E40),
                           fontSize: 12,
