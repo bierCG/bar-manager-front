@@ -15,9 +15,6 @@ import '../config.dart';
 import 'package:jwt_decoder/jwt_decoder.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-const String baseUrlHttp = 'https://$backendDomain';
-String get urlWebSocket => 'wss://$backendDomain/ws/bar?token=$token';
-
 class TelaLogin extends StatefulWidget {
   const TelaLogin({super.key});
 
@@ -35,7 +32,7 @@ class _TelaLoginState extends State<TelaLogin> {
     final usuario = usuarioController.text;
     final senha = senhaController.text;
 
-    final url = Uri.parse('$baseUrlHttp/login/');
+    final url = Uri.parse('$urlHttp/login/');
     try {
       final response = await http.post(
         url,

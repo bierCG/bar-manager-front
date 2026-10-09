@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -6,9 +7,6 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../auth.dart';
 import '../config.dart';
-
-import 'package:jwt_decoder/jwt_decoder.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 class PontoVisual extends StatefulWidget {
   const PontoVisual({super.key});
@@ -19,8 +17,17 @@ class PontoVisual extends StatefulWidget {
 
 class _PontoVisualState extends State<PontoVisual> {
   WebSocketChannel? channel;
+  StreamSubscription? _webSocketSubscription;
 
   List<Map<String, dynamic>> pedidos = [];
+
+  Timer? _heartbeatTimer;
+  Timer? _reconnectTimer;
+  DateTime? _ultimoPong;
+
+  bool _mostrandoDesconectado = false;
+  bool conectado = false;
+  bool _encerrando = false;
 
   @override
   void initState() {
@@ -28,6 +35,110 @@ class _PontoVisualState extends State<PontoVisual> {
     carregarHistoricoHTTP();
     conectarWebSocket();
   }
+
+  // ---------------------------------------------------------------------------
+  // STATUS DE CONEXÃO
+  // ---------------------------------------------------------------------------
+
+  void statusConexao() {
+    if (!mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+
+    if (_mostrandoDesconectado) {
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Desconectado'),
+            duration: Duration(days: 1),
+          ),
+        );
+    } else {
+      messenger.clearSnackBars();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // HEARTBEAT
+  // ---------------------------------------------------------------------------
+
+  void iniciarHeartbeat() {
+    _heartbeatTimer?.cancel();
+
+    _ultimoPong = DateTime.now();
+
+    _heartbeatTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) {
+        if (channel == null) return;
+
+        if (DateTime.now().difference(_ultimoPong!) >
+            const Duration(seconds: 10)) {
+          _conexaoPerdida();
+          return;
+        }
+
+        try {
+          channel!.sink.add(
+            jsonEncode({
+              'event': 'PING',
+            }),
+          );
+        } catch (_) {
+          _conexaoPerdida();
+        }
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // QUEDA E RECONEXÃO
+  // ---------------------------------------------------------------------------
+
+  void _conexaoPerdida() {
+    if (_encerrando) return;
+
+    _heartbeatTimer?.cancel();
+
+    _webSocketSubscription?.cancel();
+    _webSocketSubscription = null;
+
+    channel?.sink.close();
+    channel = null;
+
+    if (mounted) {
+      setState(() {
+        conectado = false;
+      });
+
+      if (!_mostrandoDesconectado) {
+        _mostrandoDesconectado = true;
+        statusConexao();
+      }
+    }
+
+    _tentarReconectar();
+  }
+
+  void _tentarReconectar() {
+    if (_encerrando) return;
+
+    _reconnectTimer?.cancel();
+
+    _reconnectTimer = Timer(
+      const Duration(seconds: 5),
+      () {
+        if (mounted && !conectado) {
+          conectarWebSocket();
+        }
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // HTTP
+  // ---------------------------------------------------------------------------
 
   Future<void> carregarHistoricoHTTP() async {
     try {
@@ -37,65 +148,175 @@ class _PontoVisualState extends State<PontoVisual> {
           'Authorization': 'Bearer $token',
         },
       );
-      if (response.statusCode == 200) {
-        final List<dynamic> dados = jsonDecode(response.body);
-        setState(() {
-          pedidos = dados.map((p) => Map<String, dynamic>.from(p)).toList();
-        });
-      }
+
+      if (response.statusCode != 200) return;
+
+      final dados = jsonDecode(response.body);
+
+      if (dados is! List) return;
+      if (!mounted) return;
+
+      setState(() {
+        pedidos = dados
+            .map((p) => Map<String, dynamic>.from(p))
+            .toList();
+      });
     } catch (e) {
-      print('Erro ao carregar histórico via HTTP: $e');
+      debugPrint('Erro ao carregar histórico via HTTP: $e');
     }
   }
 
-  void conectarWebSocket() {
-    channel = WebSocketChannel.connect(
-      Uri.parse('$urlWs/ws/bar?token=$token'),
-    );
+  // ---------------------------------------------------------------------------
+  // WEBSOCKET
+  // ---------------------------------------------------------------------------
 
-    channel!.stream.listen((mensagem) {
-      final Map<String, dynamic> dados = jsonDecode(mensagem);
-      final String evento = dados['event'];
-      final Map<String, dynamic> payload = dados['payload'];
+  Future<void> conectarWebSocket() async {
+    if (_encerrando) return;
+
+    try {
+      await _webSocketSubscription?.cancel();
+      _webSocketSubscription = null;
+
+      channel?.sink.close();
+
+      final novoChannel = WebSocketChannel.connect(
+        Uri.parse('$urlWs/ws/bar?token=$token'),
+      );
+
+      channel = novoChannel;
+
+      await novoChannel.ready;
+
+      if (!mounted || channel != novoChannel) {
+        novoChannel.sink.close();
+        return;
+      }
+
+      // Assina o stream ANTES do pull, para não perder eventos no intervalo.
+      _webSocketSubscription = novoChannel.stream.listen(
+        (mensagem) {
+          if (!mounted || channel != novoChannel) return;
+
+          try {
+            final dados = jsonDecode(mensagem);
+
+            if (dados is! Map<String, dynamic>) return;
+
+            final evento = dados['event'];
+
+            if (evento == 'PONG') {
+              _ultimoPong = DateTime.now();
+              return;
+            }
+
+            if (evento != 'pedido.created' && evento != 'pedido.updated') {
+              return;
+            }
+
+            final payload = dados['payload'];
+
+            if (payload is! Map<String, dynamic>) return;
+
+            setState(() {
+              if (evento == 'pedido.created') {
+                final jaExiste = pedidos.any(
+                  (p) => p['id'] == payload['id'],
+                );
+
+                if (!jaExiste) {
+                  pedidos.insert(0, payload);
+                }
+              } else if (evento == 'pedido.updated') {
+                final index = pedidos.indexWhere(
+                  (p) => p['id'] == payload['id'],
+                );
+
+                if (index != -1) {
+                  pedidos[index]['status'] = payload['status'];
+                }
+              }
+            });
+          } catch (e) {
+            debugPrint('Erro ao processar mensagem WebSocket: $e');
+          }
+        },
+        onDone: () {
+          if (channel == novoChannel) {
+            _conexaoPerdida();
+          }
+        },
+        onError: (_) {
+          if (channel == novoChannel) {
+            _conexaoPerdida();
+          }
+        },
+        cancelOnError: true,
+      );
 
       setState(() {
-        if (evento == 'pedido.created') {
-          final jaExiste = pedidos.any(
-            (p) => p['id'] == payload['id'],
-          );
-
-          if (!jaExiste) {
-            pedidos.insert(0, payload);
-          }
-        } else if (evento == 'pedido.updated') {
-          final index = pedidos.indexWhere(
-            (p) => p['id'] == payload['id'],
-          );
-
-          if (index != -1) {
-            pedidos[index]['status'] = payload['status'];
-          }
-        }
+        conectado = true;
       });
-    });
+
+      _mostrandoDesconectado = false;
+      statusConexao();
+
+      _reconnectTimer?.cancel();
+
+      iniciarHeartbeat();
+
+      // Pull de reconexão: substitui a lista pelo estado atual.
+      await carregarHistoricoHTTP();
+    } catch (e) {
+      debugPrint('Erro ao conectar WebSocket: $e');
+      _conexaoPerdida();
+    }
   }
+
+  // ---------------------------------------------------------------------------
+  // CICLO DE VIDA
+  // ---------------------------------------------------------------------------
 
   @override
   void dispose() {
+    _encerrando = true;
+
+    _heartbeatTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _webSocketSubscription?.cancel();
+
     channel?.sink.close();
+
     super.dispose();
   }
 
+  // ---------------------------------------------------------------------------
+  // UI
+  // ---------------------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
+    // Pedidos entregues não aparecem para o cliente.
+    final pedidosVisiveis =
+        pedidos.where((p) => p['status'] != 'ENTREGUE').toList();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Ponto Visual'),
+        actions: [
+          IconButton(
+            tooltip: 'Simular desconexão',
+            icon: const Icon(Icons.wifi_off),
+            onPressed: () {
+              debugPrint('>>> TESTE: fechando canal manualmente');
+              channel?.sink.close();
+            },
+          ),
+        ],
       ),
       body: ListView.builder(
-        itemCount: pedidos.length,
+        itemCount: pedidosVisiveis.length,
         itemBuilder: (context, index) {
-          final p = pedidos[index];
+          final p = pedidosVisiveis[index];
           final bool pronto = p['status'] == 'PRONTO';
 
           return Container(
@@ -136,9 +357,7 @@ class _PontoVisualState extends State<PontoVisual> {
                   ],
                 ),
                 Icon(
-                  pronto
-                      ? Icons.check_circle
-                      : Icons.hourglass_top,
+                  pronto ? Icons.check_circle : Icons.hourglass_top,
                   color: pronto
                       ? Colors.greenAccent
                       : const Color(0xFFFF5722),

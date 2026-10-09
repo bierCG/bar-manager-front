@@ -16,10 +16,17 @@ class TelaCozinha extends StatefulWidget {
 }
 
 class _TelaCozinhaState extends State<TelaCozinha> {
+  static const Color _corAberto = Color(0xFFFF6E40);
+  static const Color _corPronto = Colors.greenAccent;
+  static const Color _corEntregue = Color(0xFF40C4FF);
+
   WebSocketChannel? channel;
   StreamSubscription? _webSocketSubscription;
 
   List<Map<String, dynamic>> pedidos = [];
+
+  // IDs com ação em andamento (evita duplo toque).
+  final Set<int> _processando = {};
 
   Timer? _heartbeatTimer;
   Timer? _reconnectTimer;
@@ -32,12 +39,17 @@ class _TelaCozinhaState extends State<TelaCozinha> {
   @override
   void initState() {
     super.initState();
-
     carregarHistoricoHTTP();
     conectarWebSocket();
   }
 
+  // ---------------------------------------------------------------------------
+  // STATUS DE CONEXÃO
+  // ---------------------------------------------------------------------------
+
   void statusConexao() {
+    if (!mounted) return;
+
     final messenger = ScaffoldMessenger.of(context);
 
     if (_mostrandoDesconectado) {
@@ -53,6 +65,30 @@ class _TelaCozinhaState extends State<TelaCozinha> {
       messenger.clearSnackBars();
     }
   }
+
+  void _avisar(String texto) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(texto),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+
+    // Se o aviso cobriu o "Desconectado", reexibe depois.
+    if (_mostrandoDesconectado) {
+      Future.delayed(const Duration(seconds: 4), () {
+        if (mounted && _mostrandoDesconectado) statusConexao();
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // HEARTBEAT
+  // ---------------------------------------------------------------------------
 
   void iniciarHeartbeat() {
     _heartbeatTimer?.cancel();
@@ -82,6 +118,10 @@ class _TelaCozinhaState extends State<TelaCozinha> {
       },
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // QUEDA E RECONEXÃO
+  // ---------------------------------------------------------------------------
 
   void _conexaoPerdida() {
     if (_encerrando) return;
@@ -117,11 +157,16 @@ class _TelaCozinhaState extends State<TelaCozinha> {
       const Duration(seconds: 5),
       () {
         if (mounted && !conectado) {
+          // O pull do histórico já acontece dentro de conectarWebSocket.
           conectarWebSocket();
         }
       },
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // HTTP
+  // ---------------------------------------------------------------------------
 
   Future<void> carregarHistoricoHTTP() async {
     try {
@@ -132,27 +177,84 @@ class _TelaCozinhaState extends State<TelaCozinha> {
         },
       );
 
-      if (response.statusCode != 200) {
-        return;
-      }
+      if (response.statusCode != 200) return;
 
       final dados = jsonDecode(response.body);
 
       if (dados is! List) return;
-
       if (!mounted) return;
 
       setState(() {
         pedidos = dados
-            .map(
-              (p) => Map<String, dynamic>.from(p),
-            )
+            .map((p) => Map<String, dynamic>.from(p))
             .toList();
       });
     } catch (e) {
       debugPrint('Erro ao carregar histórico via HTTP: $e');
     }
   }
+
+  /// Substitui o pedido na lista local (usado com a resposta do PATCH,
+  /// para a tela atualizar mesmo se o WebSocket estiver fora).
+  void _atualizarLocal(Map<String, dynamic> pedido) {
+    if (!mounted) return;
+
+    setState(() {
+      final index = pedidos.indexWhere((p) => p['id'] == pedido['id']);
+      if (index != -1) {
+        pedidos[index] = pedido;
+      } else {
+        pedidos.insert(0, pedido);
+      }
+    });
+  }
+
+  Future<void> _executarAcao(
+    int pedidoId,
+    String rota,
+    String nomeAcao,
+  ) async {
+    if (_processando.contains(pedidoId)) return;
+
+    setState(() => _processando.add(pedidoId));
+
+    try {
+      final response = await http.patch(
+        Uri.parse('$urlHttp/pedidos/$pedidoId/$rota'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final dados = jsonDecode(response.body);
+        if (dados is Map) {
+          _atualizarLocal(Map<String, dynamic>.from(dados));
+        }
+      } else {
+        debugPrint('$nomeAcao pedido: ${response.statusCode}');
+        _avisar('Não foi possível $nomeAcao o pedido (${response.statusCode})');
+      }
+    } catch (e) {
+      debugPrint('Erro ao $nomeAcao pedido: $e');
+      _avisar('Falha de conexão. Ação NÃO realizada.');
+    } finally {
+      if (mounted) {
+        setState(() => _processando.remove(pedidoId));
+      }
+    }
+  }
+
+  Future<void> finalizarPedido(int pedidoId) =>
+      _executarAcao(pedidoId, 'finish', 'finalizar');
+
+  Future<void> entregarPedido(int pedidoId) =>
+      _executarAcao(pedidoId, 'deliver', 'entregar');
+
+  // ---------------------------------------------------------------------------
+  // WEBSOCKET
+  // ---------------------------------------------------------------------------
 
   Future<void> conectarWebSocket() async {
     if (_encerrando) return;
@@ -176,24 +278,7 @@ class _TelaCozinhaState extends State<TelaCozinha> {
         return;
       }
 
-      setState(() {
-        conectado = true;
-      });
-
-      _mostrandoDesconectado = false;
-      statusConexao();
-
-      _reconnectTimer?.cancel();
-
-      iniciarHeartbeat();
-
-      await carregarHistoricoHTTP();
-
-      if (!mounted || channel != novoChannel) {
-        novoChannel.sink.close();
-        return;
-      }
-
+      // Assina o stream ANTES do pull, para não perder eventos no intervalo.
       _webSocketSubscription = novoChannel.stream.listen(
         (mensagem) {
           if (!mounted || channel != novoChannel) return;
@@ -210,8 +295,7 @@ class _TelaCozinhaState extends State<TelaCozinha> {
               return;
             }
 
-            if (evento != 'pedido.created' &&
-                evento != 'pedido.updated') {
+            if (evento != 'pedido.created' && evento != 'pedido.updated') {
               return;
             }
 
@@ -254,31 +338,29 @@ class _TelaCozinhaState extends State<TelaCozinha> {
         },
         cancelOnError: true,
       );
+
+      setState(() {
+        conectado = true;
+      });
+
+      _mostrandoDesconectado = false;
+      statusConexao();
+
+      _reconnectTimer?.cancel();
+
+      iniciarHeartbeat();
+
+      // Pull de reconexão: traz tudo que mudou durante a queda.
+      await carregarHistoricoHTTP();
     } catch (e) {
       debugPrint('Erro ao conectar WebSocket: $e');
       _conexaoPerdida();
     }
   }
 
-  Future<void> finalizarPedido(int pedidoId) async {
-    try {
-      final url = Uri.parse(
-        '$urlHttp/pedidos/$pedidoId/finish',
-      );
-
-      final response = await http.patch(
-        url,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      );
-
-      debugPrint('Finalizar pedido: ${response.statusCode}');
-    } catch (e) {
-      debugPrint('Erro ao finalizar pedido: $e');
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // CICLO DE VIDA
+  // ---------------------------------------------------------------------------
 
   @override
   void dispose() {
@@ -293,13 +375,21 @@ class _TelaCozinhaState extends State<TelaCozinha> {
     super.dispose();
   }
 
+  // ---------------------------------------------------------------------------
+  // UI
+  // ---------------------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
-    final pedidosAbertos =
-        pedidos.where((p) => p['status'] != 'PRONTO').toList();
+    final pedidosAbertos = pedidos
+        .where((p) => p['status'] != 'PRONTO' && p['status'] != 'ENTREGUE')
+        .toList();
 
     final pedidosProntos =
         pedidos.where((p) => p['status'] == 'PRONTO').toList();
+
+    final pedidosEntregues =
+        pedidos.where((p) => p['status'] == 'ENTREGUE').toList();
 
     return Scaffold(
       appBar: AppBar(
@@ -313,7 +403,55 @@ class _TelaCozinhaState extends State<TelaCozinha> {
               channel?.sink.close();
             },
           ),
+          Builder(
+            builder: (context) => IconButton(
+              tooltip: 'Pedidos entregues',
+              icon: Badge(
+                label: Text('${pedidosEntregues.length}'),
+                isLabelVisible: pedidosEntregues.isNotEmpty,
+                child: const Icon(Icons.inventory_2_outlined),
+              ),
+              onPressed: () => Scaffold.of(context).openEndDrawer(),
+            ),
+          ),
         ],
+      ),
+      endDrawer: Drawer(
+        width: 380,
+        backgroundColor: const Color(0xFF121212),
+        child: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Entregues (${pedidosEntregues.length})',
+                  style: const TextStyle(
+                    color: _corEntregue,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: pedidosEntregues.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'Nenhum pedido entregue',
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        itemCount: pedidosEntregues.length,
+                        itemBuilder: (context, index) =>
+                            _construirCard(pedidosEntregues[index]),
+                      ),
+              ),
+            ],
+          ),
+        ),
       ),
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -321,7 +459,7 @@ class _TelaCozinhaState extends State<TelaCozinha> {
           Expanded(
             child: _construirColunaPedidos(
               titulo: 'Em Aberto (${pedidosAbertos.length})',
-              corTitulo: const Color(0xFFFF6E40),
+              corTitulo: _corAberto,
               pedidosLista: pedidosAbertos,
             ),
           ),
@@ -332,7 +470,7 @@ class _TelaCozinhaState extends State<TelaCozinha> {
           Expanded(
             child: _construirColunaPedidos(
               titulo: 'Prontos (${pedidosProntos.length})',
-              corTitulo: Colors.greenAccent,
+              corTitulo: _corPronto,
               pedidosLista: pedidosProntos,
             ),
           ),
@@ -361,98 +499,111 @@ class _TelaCozinhaState extends State<TelaCozinha> {
         ),
         Expanded(
           child: ListView.builder(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             itemCount: pedidosLista.length,
-            itemBuilder: (context, index) {
-              final p = pedidosLista[index];
-              final bool pronto = p['status'] == 'PRONTO';
-
-              return Container(
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Row(
-                  mainAxisAlignment:
-                      MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment:
-                            CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '#${p['id']} - ${p['drink']}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Cliente: ${p['cliente_nome']}',
-                            style: const TextStyle(
-                              color: Colors.grey,
-                              fontSize: 14,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'Status: ${p['status'] ?? "ABERTO"}',
-                            style: TextStyle(
-                              color: pronto
-                                  ? Colors.greenAccent
-                                  : const Color(0xFFFF6E40),
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: pronto
-                            ? const Color(0xFF2C2C2E)
-                            : const Color(0xFFFF5722),
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius:
-                              BorderRadius.circular(10),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                      ),
-                      onPressed: pronto
-                          ? null
-                          : () => finalizarPedido(p['id']),
-                      child: Text(
-                        pronto
-                            ? 'CONCLUÍDO'
-                            : 'MARCAR PRONTO',
-                        style: TextStyle(
-                          color: pronto
-                              ? Colors.grey
-                              : Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
+            itemBuilder: (context, index) =>
+                _construirCard(pedidosLista[index]),
           ),
         ),
       ],
+    );
+  }
+
+  Widget _construirCard(Map<String, dynamic> p) {
+    final String status = (p['status'] ?? 'ABERTO').toString();
+    final bool pronto = status == 'PRONTO';
+    final bool entregue = status == 'ENTREGUE';
+
+    final Color corStatus = entregue
+        ? _corEntregue
+        : pronto
+            ? _corPronto
+            : _corAberto;
+
+    final int id = p['id'] as int;
+    final bool ocupado = _processando.contains(id);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(16),
+        border: entregue
+            ? Border.all(color: _corEntregue.withOpacity(0.4))
+            : null,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '#${p['id']} - ${p['drink']}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Cliente: ${p['cliente_nome']}',
+                  style: const TextStyle(
+                    color: Colors.grey,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Status: $status',
+                  style: TextStyle(
+                    color: corStatus,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (entregue)
+            const Icon(Icons.done_all, color: _corEntregue)
+          else
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor:
+                    pronto ? const Color(0xFF0288D1) : const Color(0xFFFF5722),
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: const Color(0xFF2C2C2E),
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+              ),
+              onPressed: ocupado
+                  ? null
+                  : () => pronto ? entregarPedido(id) : finalizarPedido(id),
+              child: ocupado
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Text(
+                      pronto ? 'ENTREGAR' : 'FINALIZAR',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+            ),
+        ],
+      ),
     );
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -6,9 +7,6 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../auth.dart';
 import '../config.dart';
-
-import 'package:jwt_decoder/jwt_decoder.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 class TelaBarman extends StatefulWidget {
   const TelaBarman({super.key});
@@ -19,7 +17,17 @@ class TelaBarman extends StatefulWidget {
 
 class _TelaBarmanState extends State<TelaBarman> {
   WebSocketChannel? channel;
+  StreamSubscription? _webSocketSubscription;
+
   List<Map<String, dynamic>> pedidos = [];
+
+  Timer? _heartbeatTimer;
+  Timer? _reconnectTimer;
+  DateTime? _ultimoPong;
+
+  bool _mostrandoDesconectado = false;
+  bool conectado = false;
+  bool _encerrando = false;
 
   final TextEditingController drinkController = TextEditingController();
   final TextEditingController clienteController = TextEditingController();
@@ -27,9 +35,113 @@ class _TelaBarmanState extends State<TelaBarman> {
   @override
   void initState() {
     super.initState();
-    conectarWebSocket();
     carregarHistoricoHTTP();
+    conectarWebSocket();
   }
+
+  // ---------------------------------------------------------------------------
+  // STATUS DE CONEXÃO
+  // ---------------------------------------------------------------------------
+
+  void statusConexao() {
+    if (!mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+
+    if (_mostrandoDesconectado) {
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Desconectado'),
+            duration: Duration(days: 1),
+          ),
+        );
+    } else {
+      messenger.clearSnackBars();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // HEARTBEAT
+  // ---------------------------------------------------------------------------
+
+  void iniciarHeartbeat() {
+    _heartbeatTimer?.cancel();
+
+    _ultimoPong = DateTime.now();
+
+    _heartbeatTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) {
+        if (channel == null) return;
+
+        if (DateTime.now().difference(_ultimoPong!) >
+            const Duration(seconds: 10)) {
+          _conexaoPerdida();
+          return;
+        }
+
+        try {
+          channel!.sink.add(
+            jsonEncode({
+              'event': 'PING',
+            }),
+          );
+        } catch (_) {
+          _conexaoPerdida();
+        }
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // QUEDA E RECONEXÃO
+  // ---------------------------------------------------------------------------
+
+  void _conexaoPerdida() {
+    if (_encerrando) return;
+
+    _heartbeatTimer?.cancel();
+
+    _webSocketSubscription?.cancel();
+    _webSocketSubscription = null;
+
+    channel?.sink.close();
+    channel = null;
+
+    if (mounted) {
+      setState(() {
+        conectado = false;
+      });
+
+      if (!_mostrandoDesconectado) {
+        _mostrandoDesconectado = true;
+        statusConexao();
+      }
+    }
+
+    _tentarReconectar();
+  }
+
+  void _tentarReconectar() {
+    if (_encerrando) return;
+
+    _reconnectTimer?.cancel();
+
+    _reconnectTimer = Timer(
+      const Duration(seconds: 5),
+      () {
+        if (mounted && !conectado) {
+          conectarWebSocket();
+        }
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // HTTP
+  // ---------------------------------------------------------------------------
 
   Future<void> carregarHistoricoHTTP() async {
     try {
@@ -39,41 +151,24 @@ class _TelaBarmanState extends State<TelaBarman> {
           'Authorization': 'Bearer $token',
         },
       );
-      if (response.statusCode == 200) {
-        final List<dynamic> dados = jsonDecode(response.body);
-        setState(() {
-          pedidos = dados.map((p) => Map<String, dynamic>.from(p)).toList();
-        });
-      }
+
+      if (response.statusCode != 200) return;
+
+      final dados = jsonDecode(response.body);
+
+      if (dados is! List) return;
+      if (!mounted) return;
+
+      setState(() {
+        pedidos = dados
+            .map((p) => Map<String, dynamic>.from(p))
+            .toList();
+      });
     } catch (e) {
-      print('Erro ao carregar histórico via HTTP: $e');
+      debugPrint('Erro ao carregar histórico via HTTP: $e');
     }
   }
 
-  void conectarWebSocket() {
-    channel = WebSocketChannel.connect(
-      Uri.parse('$urlWs/ws/bar?token=$token'),
-    );
-
-    channel!.stream.listen((mensagem) {
-      final Map<String, dynamic> dados = jsonDecode(mensagem);
-      final String evento = dados['event'];
-      final Map<String, dynamic> payload = dados['payload'];
-
-      setState(() {
-        if (evento == 'pedido.updated') {
-          final index = pedidos.indexWhere(
-            (p) => p['id'] == payload['id'],
-          );
-
-          if (index != -1) {
-            pedidos[index]['status'] = payload['status'];
-          }
-        }
-      });
-    });
-  }
-  
   Future<void> criarPedido() async {
     if (drinkController.text.isEmpty || clienteController.text.isEmpty) {
       return;
@@ -90,38 +185,189 @@ class _TelaBarmanState extends State<TelaBarman> {
         url,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token'
+          'Authorization': 'Bearer $token',
         },
         body: body,
       );
-      if (response.statusCode == 200) {
-        final Map<String, dynamic> pedido = jsonDecode(response.body);
-        
-        setState(() {
-          pedidos.insert(0, pedido);
-        });
-      }
 
-      drinkController.clear();
-      clienteController.clear();
+      if (!mounted) return;
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final dados = jsonDecode(response.body);
+
+        if (dados is Map) {
+          final pedido = Map<String, dynamic>.from(dados);
+
+          setState(() {
+            final jaExiste = pedidos.any((p) => p['id'] == pedido['id']);
+            if (!jaExiste) {
+              pedidos.insert(0, pedido);
+            }
+          });
+        }
+
+        drinkController.clear();
+        clienteController.clear();
+      } else {
+        _avisar('Não foi possível enviar o pedido (${response.statusCode})');
+      }
     } catch (e) {
-      print('Erro ao enviar pedido: $e');
+      debugPrint('Erro ao enviar pedido: $e');
+      _avisar('Falha de conexão. O pedido NÃO foi enviado.');
     }
   }
 
+  void _avisar(String texto) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(texto),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    // Se o aviso substituiu o "Desconectado", reexibe depois.
+    if (_mostrandoDesconectado) {
+      Future.delayed(const Duration(seconds: 4), () {
+        if (mounted && _mostrandoDesconectado) statusConexao();
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // WEBSOCKET
+  // ---------------------------------------------------------------------------
+
+  Future<void> conectarWebSocket() async {
+    if (_encerrando) return;
+
+    try {
+      await _webSocketSubscription?.cancel();
+      _webSocketSubscription = null;
+
+      channel?.sink.close();
+
+      final novoChannel = WebSocketChannel.connect(
+        Uri.parse('$urlWs/ws/bar?token=$token'),
+      );
+
+      channel = novoChannel;
+
+      await novoChannel.ready;
+
+      if (!mounted || channel != novoChannel) {
+        novoChannel.sink.close();
+        return;
+      }
+
+      // Assina o stream ANTES do pull, para não perder eventos no intervalo.
+      _webSocketSubscription = novoChannel.stream.listen(
+        (mensagem) {
+          if (!mounted || channel != novoChannel) return;
+
+          try {
+            final dados = jsonDecode(mensagem);
+
+            if (dados is! Map<String, dynamic>) return;
+
+            final evento = dados['event'];
+
+            if (evento == 'PONG') {
+              _ultimoPong = DateTime.now();
+              return;
+            }
+
+            if (evento != 'pedido.updated') return;
+
+            final payload = dados['payload'];
+
+            if (payload is! Map<String, dynamic>) return;
+
+            setState(() {
+              final index = pedidos.indexWhere(
+                (p) => p['id'] == payload['id'],
+              );
+
+              if (index != -1) {
+                pedidos[index]['status'] = payload['status'];
+              }
+            });
+          } catch (e) {
+            debugPrint('Erro ao processar mensagem WebSocket: $e');
+          }
+        },
+        onDone: () {
+          if (channel == novoChannel) {
+            _conexaoPerdida();
+          }
+        },
+        onError: (_) {
+          if (channel == novoChannel) {
+            _conexaoPerdida();
+          }
+        },
+        cancelOnError: true,
+      );
+
+      setState(() {
+        conectado = true;
+      });
+
+      _mostrandoDesconectado = false;
+      statusConexao();
+
+      _reconnectTimer?.cancel();
+
+      iniciarHeartbeat();
+
+      // Pull de reconexão: atualiza o que mudou durante a queda.
+      await carregarHistoricoHTTP();
+    } catch (e) {
+      debugPrint('Erro ao conectar WebSocket: $e');
+      _conexaoPerdida();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // CICLO DE VIDA
+  // ---------------------------------------------------------------------------
+
   @override
   void dispose() {
+    _encerrando = true;
+
+    _heartbeatTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _webSocketSubscription?.cancel();
+
     channel?.sink.close();
+
     drinkController.dispose();
     clienteController.dispose();
+
     super.dispose();
   }
+
+  // ---------------------------------------------------------------------------
+  // UI
+  // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Lançar Pedidos'),
+        actions: [
+          IconButton(
+            tooltip: 'Simular desconexão',
+            icon: const Icon(Icons.wifi_off),
+            onPressed: () {
+              debugPrint('>>> TESTE: fechando canal manualmente');
+              channel?.sink.close();
+            },
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -139,7 +385,7 @@ class _TelaBarmanState extends State<TelaBarman> {
                 children: [
                   Text(
                     '$username',
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
@@ -191,7 +437,9 @@ class _TelaBarmanState extends State<TelaBarman> {
                       child: const Text(
                         'Enviar Pedido',
                         style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.bold),
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
@@ -214,6 +462,13 @@ class _TelaBarmanState extends State<TelaBarman> {
                 itemBuilder: (context, index) {
                   final p = pedidos[index];
                   final bool pronto = p['status'] == 'PRONTO';
+                  final bool entregue = p['status'] == 'ENTREGUE';
+
+                  final Color corStatus = entregue
+                      ? const Color(0xFF40C4FF)
+                      : pronto
+                          ? Colors.greenAccent
+                          : const Color(0xFFFF6E40);
 
                   return Container(
                     margin: const EdgeInsets.only(bottom: 10),
@@ -240,15 +495,23 @@ class _TelaBarmanState extends State<TelaBarman> {
                             Text(
                               'Status: ${p['status'] ?? "ABERTO"}',
                               style: TextStyle(
-                                color: pronto ? Colors.greenAccent : const Color(0xFFFF6E40),
+                                color: corStatus,
                                 fontSize: 13,
                               ),
                             ),
                           ],
                         ),
                         Icon(
-                          pronto ? Icons.check_circle : Icons.hourglass_top,
-                          color: pronto ? Colors.greenAccent : const Color(0xFFFF5722),
+                          entregue
+                              ? Icons.done_all
+                              : pronto
+                                  ? Icons.check_circle
+                                  : Icons.hourglass_top,
+                          color: entregue
+                              ? const Color(0xFF40C4FF)
+                              : pronto
+                                  ? Colors.greenAccent
+                                  : const Color(0xFFFF5722),
                         ),
                       ],
                     ),
