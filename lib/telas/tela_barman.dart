@@ -66,6 +66,20 @@ class _TelaBarmanState extends State<TelaBarman> {
   // HEARTBEAT
   // ---------------------------------------------------------------------------
 
+  void _mostrarReconectado() {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('Reconectado'),
+          backgroundColor: Color(0xFF2E7D32),
+          duration: Duration(seconds: 3),
+        ),
+      );
+  }
+
   void iniciarHeartbeat() {
     _heartbeatTimer?.cancel();
 
@@ -314,8 +328,10 @@ class _TelaBarmanState extends State<TelaBarman> {
         conectado = true;
       });
 
+      final eraDesconectado = _mostrandoDesconectado;
       _mostrandoDesconectado = false;
       statusConexao();
+      if (eraDesconectado) _mostrarReconectado();
 
       _reconnectTimer?.cancel();
 
