@@ -61,17 +61,17 @@ class _TelaLoginState extends State<TelaLogin> {
       final role = payload['role'];
       user_id = payload['sub'];
 
-      if (role == 'bartender') {
+      if (role == 'BARTENDER') {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const TelaBarman()),
         );
-      } else if (role == 'cozinha') {
+      } else if (role == 'COZINHA') {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const TelaCozinha()),
         );
-      } else if (role == 'expositor') {
+      } else if (role == 'EXPOSITOR') {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const PontoVisual()),
