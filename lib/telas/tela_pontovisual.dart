@@ -6,7 +6,9 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../auth.dart';
-import '../config.dart';
+import '../configlocal.dart';
+
+import 'package:google_fonts/google_fonts.dart';
 
 class PontoVisual extends StatefulWidget {
   const PontoVisual({super.key});
@@ -143,7 +145,7 @@ class _PontoVisualState extends State<PontoVisual> {
   Future<void> carregarHistoricoHTTP() async {
     try {
       final response = await http.get(
-        Uri.parse('$urlHttp/pedidos/'),
+        Uri.parse('$urlHttpM/pedidos/'),
         headers: {
           'Authorization': 'Bearer $token',
         },
@@ -180,7 +182,7 @@ class _PontoVisualState extends State<PontoVisual> {
       channel?.sink.close();
 
       final novoChannel = WebSocketChannel.connect(
-        Uri.parse('$urlWs/ws/bar?token=$token'),
+        Uri.parse('$urlWsM/ws/bar?token=$token'),
       );
 
       channel = novoChannel;
@@ -293,79 +295,185 @@ class _PontoVisualState extends State<PontoVisual> {
   // UI
   // ---------------------------------------------------------------------------
 
-  @override
-  Widget build(BuildContext context) {
-    // Pedidos entregues não aparecem para o cliente.
-    final pedidosVisiveis =
-        pedidos.where((p) => p['status'] != 'ENTREGUE').toList();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Ponto Visual'),
-        actions: [
-          IconButton(
-            tooltip: 'Simular desconexão',
-            icon: const Icon(Icons.wifi_off),
-            onPressed: () {
-              debugPrint('>>> TESTE: fechando canal manualmente');
-              channel?.sink.close();
-            },
+  Widget _construirPainel({
+    required String titulo,
+    String? subtitulo,
+    required IconData icone,
+    required Color cor,
+    required List<Map<String, dynamic>> lista,
+    required bool compacto,
+    bool destacarPrimeiro = false,
+  }) {
+    return Container(
+      padding: EdgeInsets.all(compacto ? 10 : 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF151517),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: cor.withOpacity(0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Icon(icone, color: cor, size: compacto ? 24 : 38),
+              SizedBox(width: compacto ? 6 : 10),
+              Flexible(
+                child: Text(
+                  titulo,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.oswald(
+                    color: cor,
+                    fontSize: compacto ? 26 : 46,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ),
+              if (subtitulo != null) ...[
+                SizedBox(width: compacto ? 6 : 12),
+                Flexible(
+                  child: Text(
+                    subtitulo,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.oswald(
+                      color: cor.withOpacity(0.9),
+                      fontSize: compacto ? 12 : 20,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          Divider(color: Colors.white.withOpacity(0.08), height: 1),
+          const SizedBox(height: 12),
+          Expanded(
+            child: ListView.builder(
+              itemCount: lista.length,
+              itemBuilder: (context, index) => _construirCardPedido(
+                lista[index],
+                cor,
+                compacto,
+                destaque: destacarPrimeiro && index == 0,
+              ),
+            ),
           ),
         ],
       ),
-      body: ListView.builder(
-        itemCount: pedidosVisiveis.length,
-        itemBuilder: (context, index) {
-          final p = pedidosVisiveis[index];
-          final bool pronto = p['status'] == 'PRONTO';
+    );
+  }
 
-          return Container(
-            margin: const EdgeInsets.only(
-              bottom: 10,
-              left: 16,
-              right: 16,
+
+  Widget _construirCardPedido(
+    Map<String, dynamic> p,
+    Color cor,
+    bool compacto, {
+    bool destaque = false,
+  }) {
+    final String cliente = (p['cliente_nome'] ?? '').toString().toUpperCase();
+    final String drink = (p['drink'] ?? '').toString().toUpperCase();
+
+    final estilo = GoogleFonts.oswald(
+      fontSize: compacto ? 17 : 28,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.5,
+    );
+
+    return Container(
+      margin: EdgeInsets.only(bottom: compacto ? 10 : 14),
+      padding: EdgeInsets.symmetric(
+        horizontal: compacto ? 12 : 18,
+        vertical: compacto ? 12 : 16,
+      ),
+      decoration: BoxDecoration(
+        color: destaque ? const Color(0xFF262628) : const Color(0xFF1E1E20),
+        borderRadius: BorderRadius.circular(8),
+        border: destaque ? Border.all(color: cor, width: 1.5) : null,
+      ),
+      child: Text.rich(
+        TextSpan(
+          children: [
+            TextSpan(
+              text: cliente,
+              style: estilo.copyWith(color: const Color(0xFFE6E6E6)),
             ),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E1E1E),
-              borderRadius: BorderRadius.circular(14),
+            TextSpan(
+              text: '  •  ',
+              style: estilo.copyWith(color: cor.withOpacity(0.6)),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            TextSpan(
+              text: drink,
+              style: estilo.copyWith(color: cor),
+            ),
+          ],
+        ),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Pedidos entregues não aparecem para o cliente.
+    final preparando = pedidos
+        .where((p) => p['status'] != 'PRONTO' && p['status'] != 'ENTREGUE')
+        .toList();
+    final prontos = pedidos.where((p) => p['status'] == 'PRONTO').toList();
+
+    final bool compacto = MediaQuery.of(context).size.width < 600;
+    final double gap = compacto ? 8 : 16;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0D0D0F),
+      body: SafeArea(
+        child: Padding(
+          padding: EdgeInsets.all(gap),
+          child: Column(
+            children: [
+              Image.asset(
+                'assets/logo.png',
+                height: compacto ? 80 : 150,
+              ),
+              SizedBox(height: gap),
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(
-                      '${p['cliente_nome']} • ${p['drink']}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
+                    Expanded(
+                      child: _construirPainel(
+                        titulo: 'PREPARANDO',
+                        icone: Icons.local_fire_department_outlined,
+                        cor: const Color(0xFFFFB366),
+                        lista: preparando,
+                        compacto: compacto,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      pronto ? 'PRONTO' : 'AGUARDANDO',
-                      style: TextStyle(
-                        color: pronto
-                            ? Colors.greenAccent
-                            : const Color(0xFFFF6E40),
-                        fontSize: 13,
+                    SizedBox(width: gap),
+                    Expanded(
+                      child: _construirPainel(
+                        titulo: 'PRONTO',
+                        subtitulo: '(RETIRAR NO BALCÃO)',
+                        icone: Icons.verified_outlined,
+                        cor: const Color(0xFF00E58A),
+                        lista: prontos,
+                        compacto: compacto,
+                        destacarPrimeiro: true,
                       ),
                     ),
                   ],
                 ),
-                Icon(
-                  pronto ? Icons.check_circle : Icons.hourglass_top,
-                  color: pronto
-                      ? Colors.greenAccent
-                      : const Color(0xFFFF5722),
-                ),
-              ],
-            ),
-          );
-        },
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

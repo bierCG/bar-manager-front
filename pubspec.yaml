@@ -36,7 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   web_socket_channel: ^3.0.3
   http: ^1.6.0
-  google_fonts: ^6.2.1
+  google_fonts: ^9.0.0
   jwt_decoder: ^2.0.1
 
 dev_dependencies:
@@ -55,6 +55,8 @@ dev_dependencies:
 
 # The following section is specific to Flutter packages.
 flutter:
+  assets:
+      - assets/logo.png
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

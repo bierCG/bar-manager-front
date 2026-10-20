@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../auth.dart';
-import '../config.dart';
+import '../configlocal.dart';
 
 class TelaCozinha extends StatefulWidget {
   const TelaCozinha({super.key});
@@ -15,7 +15,7 @@ class TelaCozinha extends StatefulWidget {
   State<TelaCozinha> createState() => _TelaCozinhaState();
 }
 
-class _TelaCozinhaState extends State<TelaCozinha> {
+class _TelaCozinhaState extends State<TelaCozinha> with WidgetsBindingObserver {
   static const Color _corAberto = Color(0xFFFF6E40);
   static const Color _corPronto = Colors.greenAccent;
   static const Color _corEntregue = Color(0xFF40C4FF);
@@ -36,11 +36,32 @@ class _TelaCozinhaState extends State<TelaCozinha> {
   bool conectado = false;
   bool _encerrando = false;
 
+  bool sincronizando = false;
+
   @override
   void initState() {
     super.initState();
+
+    WidgetsBinding.instance.addObserver(this);
+
     carregarHistoricoHTTP();
     conectarWebSocket();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      sincronizar();
+    }
+  }
+
+  Future<void> sincronizar() async {
+    setState(() => sincronizando = true);
+    try {
+      await conectarWebSocket();
+    } finally {
+      if (mounted) setState(() => sincronizando = false);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -97,9 +118,13 @@ class _TelaCozinhaState extends State<TelaCozinha> {
       ..clearSnackBars()
       ..showSnackBar(
         const SnackBar(
-          content: Text('Reconectado'),
+          content: Text(
+            'Reconectado',
+            style: TextStyle(color: Colors.white),
+          ),
           backgroundColor: Color(0xFF2E7D32),
           duration: Duration(seconds: 3),
+          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         ),
       );
   }
@@ -185,7 +210,7 @@ class _TelaCozinhaState extends State<TelaCozinha> {
   Future<void> carregarHistoricoHTTP() async {
     try {
       final response = await http.get(
-        Uri.parse('$urlHttp/pedidos/'),
+        Uri.parse('$urlHttpM/pedidos/'),
         headers: {
           'Authorization': 'Bearer $token',
         },
@@ -225,7 +250,7 @@ class _TelaCozinhaState extends State<TelaCozinha> {
 
   Future<void> _executarAcao(
     int pedidoId,
-    String rota,
+    String status,
     String nomeAcao,
   ) async {
     if (_processando.contains(pedidoId)) return;
@@ -234,11 +259,14 @@ class _TelaCozinhaState extends State<TelaCozinha> {
 
     try {
       final response = await http.patch(
-        Uri.parse('$urlHttp/pedidos/$pedidoId/$rota'),
+        Uri.parse('$urlHttpM/pedidos/$pedidoId/status'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
         },
+        body: jsonEncode({
+          'status': status,
+        })
       );
 
       if (response.statusCode == 200) {
@@ -261,10 +289,10 @@ class _TelaCozinhaState extends State<TelaCozinha> {
   }
 
   Future<void> finalizarPedido(int pedidoId) =>
-      _executarAcao(pedidoId, 'finish', 'finalizar');
+      _executarAcao(pedidoId, 'PRONTO', 'finalizar');
 
   Future<void> entregarPedido(int pedidoId) =>
-      _executarAcao(pedidoId, 'deliver', 'entregar');
+      _executarAcao(pedidoId, 'ENTREGUE', 'entregar');
 
   // ---------------------------------------------------------------------------
   // WEBSOCKET
@@ -280,7 +308,7 @@ class _TelaCozinhaState extends State<TelaCozinha> {
       channel?.sink.close();
 
       final novoChannel = WebSocketChannel.connect(
-        Uri.parse('$urlWs/ws/bar?token=$token'),
+        Uri.parse('$urlWsM/ws/bar?token=$token'),
       );
 
       channel = novoChannel;
@@ -341,7 +369,9 @@ class _TelaCozinhaState extends State<TelaCozinha> {
           }
         },
         onDone: () {
-          if (channel == novoChannel) {
+          if (novoChannel.closeCode == 4009){
+            _avisar('Já existe uma conexão ativa.');
+          } else if (channel == novoChannel) {
             _conexaoPerdida();
           }
         },
@@ -388,6 +418,8 @@ class _TelaCozinhaState extends State<TelaCozinha> {
 
     channel?.sink.close();
 
+    WidgetsBinding.instance.removeObserver(this);
+
     super.dispose();
   }
 
@@ -397,28 +429,38 @@ class _TelaCozinhaState extends State<TelaCozinha> {
 
   @override
   Widget build(BuildContext context) {
+    final largura = MediaQuery.of(context).size.width;
+    final bool mobile = largura < 700;
+
     final pedidosAbertos = pedidos
         .where((p) => p['status'] != 'PRONTO' && p['status'] != 'ENTREGUE')
         .toList();
-
     final pedidosProntos =
         pedidos.where((p) => p['status'] == 'PRONTO').toList();
-
     final pedidosEntregues =
         pedidos.where((p) => p['status'] == 'ENTREGUE').toList();
 
-    return Scaffold(
+    final colAbertos = _construirColunaPedidos(
+      titulo: 'Em Aberto (${pedidosAbertos.length})',
+      corTitulo: _corAberto,
+      pedidosLista: pedidosAbertos,
+      mostrarTitulo: !mobile,
+    );
+    final colProntos = _construirColunaPedidos(
+      titulo: 'Prontos (${pedidosProntos.length})',
+      corTitulo: _corPronto,
+      pedidosLista: pedidosProntos,
+      mostrarTitulo: !mobile,
+    );
+
+    final scaffold = Scaffold(
       appBar: AppBar(
-        title: const Text('Monitor de Preparo'),
+        title: Image.asset(
+          'assets/logo.png',
+          height: 82,
+        ),
+        centerTitle: false,
         actions: [
-          IconButton(
-            tooltip: 'Simular desconexão',
-            icon: const Icon(Icons.wifi_off),
-            onPressed: () {
-              debugPrint('>>> TESTE: fechando canal manualmente');
-              channel?.sink.close();
-            },
-          ),
           Builder(
             builder: (context) => IconButton(
               tooltip: 'Pedidos entregues',
@@ -430,10 +472,10 @@ class _TelaCozinhaState extends State<TelaCozinha> {
               onPressed: () => Scaffold.of(context).openEndDrawer(),
             ),
           ),
-        ],
+        ]
       ),
       endDrawer: Drawer(
-        width: 380,
+        width: mobile ? largura * 0.85 : 380,
         backgroundColor: const Color(0xFF121212),
         child: SafeArea(
           child: Column(
@@ -469,53 +511,75 @@ class _TelaCozinhaState extends State<TelaCozinha> {
           ),
         ),
       ),
-      body: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      body: Column(
         children: [
-          Expanded(
-            child: _construirColunaPedidos(
-              titulo: 'Em Aberto (${pedidosAbertos.length})',
-              corTitulo: _corAberto,
-              pedidosLista: pedidosAbertos,
+          if (sincronizando) const LinearProgressIndicator(),
+          if (mobile)
+            Container(
+              margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: TabBar(
+                dividerColor: Colors.transparent,
+                indicatorSize: TabBarIndicatorSize.tab,
+                indicator: BoxDecoration(
+                  color: const Color(0xFF2C2C2E),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.grey,
+                tabs: [
+                  Tab(text: 'Abertos  •  ${pedidosAbertos.length}'),
+                  Tab(text: 'Prontos  •  ${pedidosProntos.length}'),
+                ],
+              ),
             ),
-          ),
-          const VerticalDivider(
-            width: 1,
-            color: Colors.grey,
-          ),
           Expanded(
-            child: _construirColunaPedidos(
-              titulo: 'Prontos (${pedidosProntos.length})',
-              corTitulo: _corPronto,
-              pedidosLista: pedidosProntos,
-            ),
+            child: mobile
+                ? TabBarView(children: [colAbertos, colProntos])
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: colAbertos),
+                      const VerticalDivider(width: 1, color: Colors.grey),
+                      Expanded(child: colProntos),
+                    ],
+                  ),
           ),
         ],
       ),
     );
+
+    return mobile
+        ? DefaultTabController(length: 2, child: scaffold)
+        : scaffold;
   }
 
   Widget _construirColunaPedidos({
     required String titulo,
     required Color corTitulo,
     required List<Map<String, dynamic>> pedidosLista,
+    bool mostrarTitulo = true,
   }) {
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Text(
-            titulo,
-            style: TextStyle(
-              color: corTitulo,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
+        if (mostrarTitulo)
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              titulo,
+              style: TextStyle(
+                color: corTitulo,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
-        ),
         Expanded(
           child: ListView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.all(12),
             itemCount: pedidosLista.length,
             itemBuilder: (context, index) =>
                 _construirCard(pedidosLista[index]),
@@ -557,7 +621,7 @@ class _TelaCozinhaState extends State<TelaCozinha> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '#${p['id']} - ${p['drink']}',
+                  '${p['drink']}',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 16,
@@ -566,19 +630,10 @@ class _TelaCozinhaState extends State<TelaCozinha> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Cliente: ${p['cliente_nome']}',
+                  'Garcom: ${p['cliente_nome']}',
                   style: const TextStyle(
                     color: Colors.grey,
                     fontSize: 14,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Status: $status',
-                  style: TextStyle(
-                    color: corStatus,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],

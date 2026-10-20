@@ -10,7 +10,7 @@ import 'tela_cozinha.dart';
 import 'tela_pontovisual.dart';
 
 import '../auth.dart';
-import '../config.dart';
+import '../configlocal.dart';
 
 import 'package:jwt_decoder/jwt_decoder.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -32,13 +32,13 @@ class _TelaLoginState extends State<TelaLogin> {
     final usuario = usuarioController.text;
     final senha = senhaController.text;
 
-    final url = Uri.parse('$urlHttp/login/');
+    final url = Uri.parse('$urlHttpM/login/');
     try {
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'email': usuario,
+          'usuario': usuario,
           'senha': senha,
         }),
       );
@@ -71,7 +71,7 @@ class _TelaLoginState extends State<TelaLogin> {
           context,
           MaterialPageRoute(builder: (_) => const TelaCozinha()),
         );
-      } else if (role == 'pv') {
+      } else if (role == 'expositor') {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const PontoVisual()),

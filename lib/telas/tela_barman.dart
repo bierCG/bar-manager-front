@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../auth.dart';
-import '../config.dart';
+import '../configlocal.dart';
 
 class TelaBarman extends StatefulWidget {
   const TelaBarman({super.key});
@@ -160,7 +160,7 @@ class _TelaBarmanState extends State<TelaBarman> {
   Future<void> carregarHistoricoHTTP() async {
     try {
       final response = await http.get(
-        Uri.parse('$urlHttp/pedidos/bartender'),
+        Uri.parse('$urlHttpM/pedidos/bartender'),
         headers: {
           'Authorization': 'Bearer $token',
         },
@@ -188,7 +188,7 @@ class _TelaBarmanState extends State<TelaBarman> {
       return;
     }
 
-    final url = Uri.parse('$urlHttp/pedidos/');
+    final url = Uri.parse('$urlHttpM/pedidos/');
     final body = jsonEncode({
       'cliente_nome': clienteController.text,
       'drink': drinkController.text,
@@ -263,7 +263,7 @@ class _TelaBarmanState extends State<TelaBarman> {
       channel?.sink.close();
 
       final novoChannel = WebSocketChannel.connect(
-        Uri.parse('$urlWs/ws/bar?token=$token'),
+        Uri.parse('$urlWsM/ws/bar?token=$token'),
       );
 
       channel = novoChannel;
@@ -312,7 +312,9 @@ class _TelaBarmanState extends State<TelaBarman> {
           }
         },
         onDone: () {
-          if (channel == novoChannel) {
+          if (novoChannel.closeCode == 4009){
+            _avisar('Já existe uma conexão ativa.');
+          } else if (channel == novoChannel) {
             _conexaoPerdida();
           }
         },
@@ -372,19 +374,6 @@ class _TelaBarmanState extends State<TelaBarman> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Lançar Pedidos'),
-        actions: [
-          IconButton(
-            tooltip: 'Simular desconexão',
-            icon: const Icon(Icons.wifi_off),
-            onPressed: () {
-              debugPrint('>>> TESTE: fechando canal manualmente');
-              channel?.sink.close();
-            },
-          ),
-        ],
-      ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -398,7 +387,8 @@ class _TelaBarmanState extends State<TelaBarman> {
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Column(
-                children: [
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [      
                   Text(
                     '$username',
                     style: const TextStyle(
@@ -407,6 +397,7 @@ class _TelaBarmanState extends State<TelaBarman> {
                       color: Colors.white,
                     ),
                   ),
+                  const SizedBox(height: 12),
                   TextField(
                     controller: clienteController,
                     style: const TextStyle(color: Colors.white),
@@ -421,7 +412,7 @@ class _TelaBarmanState extends State<TelaBarman> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   TextField(
                     controller: drinkController,
                     style: const TextStyle(color: Colors.white),
@@ -436,7 +427,7 @@ class _TelaBarmanState extends State<TelaBarman> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
                   SizedBox(
                     width: double.infinity,
                     height: 48,
