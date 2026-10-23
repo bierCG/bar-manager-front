@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../auth.dart';
-import '../configlocal.dart';
+import '../config.dart';
 
 class TelaBarman extends StatefulWidget {
   const TelaBarman({super.key});
@@ -82,7 +82,6 @@ class _TelaBarmanState extends State<TelaBarman> {
 
   void iniciarHeartbeat() {
     _heartbeatTimer?.cancel();
-
     _ultimoPong = DateTime.now();
 
     _heartbeatTimer = Timer.periodic(
@@ -90,8 +89,7 @@ class _TelaBarmanState extends State<TelaBarman> {
       (_) {
         if (channel == null) return;
 
-        if (DateTime.now().difference(_ultimoPong!) >
-            const Duration(seconds: 10)) {
+        if (DateTime.now().difference(_ultimoPong!) > tempoLimitePong) {
           _conexaoPerdida();
           return;
         }
@@ -160,7 +158,7 @@ class _TelaBarmanState extends State<TelaBarman> {
   Future<void> carregarHistoricoHTTP() async {
     try {
       final response = await http.get(
-        Uri.parse('$urlHttpM/pedidos/bartender'),
+        Uri.parse('$urlHttp/pedidos/bartender'),
         headers: {
           'Authorization': 'Bearer $token',
         },
@@ -188,7 +186,7 @@ class _TelaBarmanState extends State<TelaBarman> {
       return;
     }
 
-    final url = Uri.parse('$urlHttpM/pedidos/');
+    final url = Uri.parse('$urlHttp/pedidos/');
     final body = jsonEncode({
       'cliente_nome': clienteController.text,
       'drink': drinkController.text,

@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../auth.dart';
-import '../configlocal.dart';
+import '../config.dart';
 
 import 'package:google_fonts/google_fonts.dart';
 
@@ -75,8 +75,7 @@ class _PontoVisualState extends State<PontoVisual> {
       (_) {
         if (channel == null) return;
 
-        if (DateTime.now().difference(_ultimoPong!) >
-            const Duration(seconds: 10)) {
+        if (DateTime.now().difference(_ultimoPong!) > tempoLimitePong) {
           _conexaoPerdida();
           return;
         }
@@ -145,7 +144,7 @@ class _PontoVisualState extends State<PontoVisual> {
   Future<void> carregarHistoricoHTTP() async {
     try {
       final response = await http.get(
-        Uri.parse('$urlHttpM/pedidos/'),
+        Uri.parse('$urlHttp/pedidos/'),
         headers: {
           'Authorization': 'Bearer $token',
         },

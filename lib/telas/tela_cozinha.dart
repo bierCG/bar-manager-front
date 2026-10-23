@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../auth.dart';
-import '../configlocal.dart';
+import '../config.dart';
 
 class TelaCozinha extends StatefulWidget {
   const TelaCozinha({super.key});
@@ -139,8 +139,7 @@ class _TelaCozinhaState extends State<TelaCozinha> with WidgetsBindingObserver {
       (_) {
         if (channel == null) return;
 
-        if (DateTime.now().difference(_ultimoPong!) >
-            const Duration(seconds: 10)) {
+        if (DateTime.now().difference(_ultimoPong!) > tempoLimitePong) {
           _conexaoPerdida();
           return;
         }
@@ -210,7 +209,7 @@ class _TelaCozinhaState extends State<TelaCozinha> with WidgetsBindingObserver {
   Future<void> carregarHistoricoHTTP() async {
     try {
       final response = await http.get(
-        Uri.parse('$urlHttpM/pedidos/'),
+        Uri.parse('$urlHttp/pedidos/'),
         headers: {
           'Authorization': 'Bearer $token',
         },
@@ -259,7 +258,7 @@ class _TelaCozinhaState extends State<TelaCozinha> with WidgetsBindingObserver {
 
     try {
       final response = await http.patch(
-        Uri.parse('$urlHttpM/pedidos/$pedidoId/status'),
+        Uri.parse('$urlHttp/pedidos/$pedidoId/status'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',

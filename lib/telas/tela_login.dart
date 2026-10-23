@@ -10,7 +10,7 @@ import 'tela_cozinha.dart';
 import 'tela_pontovisual.dart';
 
 import '../auth.dart';
-import '../configlocal.dart';
+import '../config.dart';
 
 import 'package:jwt_decoder/jwt_decoder.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -32,7 +32,7 @@ class _TelaLoginState extends State<TelaLogin> {
     final usuario = usuarioController.text;
     final senha = senhaController.text;
 
-    final url = Uri.parse('$urlHttpM/login/');
+    final url = Uri.parse('$urlHttp/login/');
     try {
       final response = await http.post(
         url,
