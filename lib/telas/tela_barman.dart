@@ -261,7 +261,7 @@ class _TelaBarmanState extends State<TelaBarman> {
       channel?.sink.close();
 
       final novoChannel = WebSocketChannel.connect(
-        Uri.parse('$urlWsM/ws/bar?token=$token'),
+        Uri.parse('$urlWs/ws/bar?token=$token'),
       );
 
       channel = novoChannel;

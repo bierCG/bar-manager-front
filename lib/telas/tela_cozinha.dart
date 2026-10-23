@@ -307,7 +307,7 @@ class _TelaCozinhaState extends State<TelaCozinha> with WidgetsBindingObserver {
       channel?.sink.close();
 
       final novoChannel = WebSocketChannel.connect(
-        Uri.parse('$urlWsM/ws/bar?token=$token'),
+        Uri.parse('$urlWs/ws/bar?token=$token'),
       );
 
       channel = novoChannel;
